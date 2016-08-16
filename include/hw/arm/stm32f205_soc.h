@@ -28,6 +28,7 @@
 #include "hw/misc/stm32f2xx_syscfg.h"
 #include "hw/timer/stm32f2xx_timer.h"
 #include "hw/char/stm32f2xx_usart.h"
+#include "hw/gpio/pl061.h"
 
 #define TYPE_STM32F205_SOC "stm32f205-soc"
 #define STM32F205_SOC(obj) \
@@ -52,6 +53,7 @@ typedef struct STM32F205State {
     STM32F2XXSyscfgState syscfg;
     STM32F2XXUsartState usart[STM_NUM_USARTS];
     STM32F2XXTimerState timer[STM_NUM_TIMERS];
+    PL061State gpio;
 } STM32F205State;
 
 #endif

@@ -32,6 +32,8 @@
 /* At the moment only Timer 2 to 5 are modelled */
 static const uint32_t timer_addr[STM_NUM_TIMERS] = { 0x40000000, 0x40000400,
     0x40000800, 0x40000C00 };
+//static const uint32_t usart_addr[STM_NUM_USARTS] = { 0x40011000, 0x40004400,
+//    0x40004800, 0x40004C00, 0x40005000, 0x40011400 };
 static const uint32_t usart_addr[STM_NUM_USARTS] = { 0x40011000, 0x40004400,
     0x40004800, 0x40004C00, 0x40005000, 0x40011400 };
 
@@ -45,6 +47,9 @@ static void stm32f205_soc_initfn(Object *obj)
 
     object_initialize(&s->syscfg, sizeof(s->syscfg), TYPE_STM32F2XX_SYSCFG);
     qdev_set_parent_bus(DEVICE(&s->syscfg), sysbus_get_default());
+
+    object_initialize(&s->gpio, sizeof(s->gpio), TYPE_PL061);
+    qdev_set_parent_bus(DEVICE(&s->gpio), sysbus_get_default());
 
     for (i = 0; i < STM_NUM_USARTS; i++) {
         object_initialize(&s->usart[i], sizeof(s->usart[i]),
@@ -62,8 +67,8 @@ static void stm32f205_soc_initfn(Object *obj)
 static void stm32f205_soc_realize(DeviceState *dev_soc, Error **errp)
 {
     STM32F205State *s = STM32F205_SOC(dev_soc);
-    DeviceState *syscfgdev, *usartdev, *timerdev, *nvic;
-    SysBusDevice *syscfgbusdev, *usartbusdev, *timerbusdev;
+    DeviceState *syscfgdev, *usartdev, *timerdev, *nvic, *gpiodev;
+    SysBusDevice *syscfgbusdev, *usartbusdev, *timerbusdev, *gpiobusdev;
     Error *err = NULL;
     int i;
 
@@ -104,17 +109,39 @@ static void stm32f205_soc_realize(DeviceState *dev_soc, Error **errp)
     sysbus_mmio_map(syscfgbusdev, 0, 0x40013800);
     sysbus_connect_irq(syscfgbusdev, 0, qdev_get_gpio_in(nvic, 71));
 
+
+    /* GPIO device */
+    gpiodev = DEVICE(&s->gpio);
+
+//    gpiodev = sysbus_create_simple("pl061", 0x40020000, qdev_get_gpio_in(nvic, 7)); //irq 7
+    qdev_prop_set_chr(gpiodev, "chardev", serial_hds[0]);
+    object_property_set_bool(OBJECT(gpiodev), true, "realized", &err);
+    if (err != NULL) {
+        error_propagate(errp, err);
+        return;
+    }
+    gpiobusdev = SYS_BUS_DEVICE(gpiodev);
+    sysbus_mmio_map(gpiobusdev, 0, 0x40020000);
+    sysbus_connect_irq(gpiobusdev, 0,
+                       qdev_get_gpio_in(nvic, 6)); //irq 6
+
+    int chardev_offset = 1;
+
     /* Attach UART (uses USART registers) and USART controllers */
     for (i = 0; i < STM_NUM_USARTS; i++) {
         usartdev = DEVICE(&(s->usart[i]));
-        qdev_prop_set_chr(usartdev, "chardev", i < MAX_SERIAL_PORTS ? serial_hds[i] : NULL);
+        qdev_prop_set_chr(usartdev, "chardev", (chardev_offset + i) <
+            MAX_SERIAL_PORTS ? serial_hds[chardev_offset+i] : NULL);
         object_property_set_bool(OBJECT(&s->usart[i]), true, "realized", &err);
         if (err != NULL) {
             error_propagate(errp, err);
             return;
         }
         usartbusdev = SYS_BUS_DEVICE(usartdev);
+
+        printf ("usart addr 0x%"PRIx32"\n", usart_addr[i]);
         sysbus_mmio_map(usartbusdev, 0, usart_addr[i]);
+        printf ("usart irq %d\n", usart_irq[i]);
         sysbus_connect_irq(usartbusdev, 0,
                            qdev_get_gpio_in(nvic, usart_irq[i]));
     }
@@ -133,6 +160,7 @@ static void stm32f205_soc_realize(DeviceState *dev_soc, Error **errp)
         sysbus_connect_irq(timerbusdev, 0,
                            qdev_get_gpio_in(nvic, timer_irq[i]));
     }
+
 }
 
 static Property stm32f205_soc_properties[] = {
