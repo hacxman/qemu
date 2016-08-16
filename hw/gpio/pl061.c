@@ -4,65 +4,11 @@
  *
  * Copyright (c) 2007 CodeSourcery.
  * Written by Paul Brook
+ *            Maros Zatko
  *
  * This code is licensed under the GPL.
  */
-
-#include "qemu/osdep.h"
-#include "hw/sysbus.h"
-#include "qemu/log.h"
-
-//#define DEBUG_PL061 1
-
-#ifdef DEBUG_PL061
-#define DPRINTF(fmt, ...) \
-do { printf("pl061: " fmt , ## __VA_ARGS__); } while (0)
-#define BADF(fmt, ...) \
-do { fprintf(stderr, "pl061: error: " fmt , ## __VA_ARGS__); exit(1);} while (0)
-#else
-#define DPRINTF(fmt, ...) do {} while(0)
-#define BADF(fmt, ...) \
-do { fprintf(stderr, "pl061: error: " fmt , ## __VA_ARGS__);} while (0)
-#endif
-
-static const uint8_t pl061_id[12] =
-  { 0x00, 0x00, 0x00, 0x00, 0x61, 0x10, 0x04, 0x00, 0x0d, 0xf0, 0x05, 0xb1 };
-static const uint8_t pl061_id_luminary[12] =
-  { 0x00, 0x00, 0x00, 0x00, 0x61, 0x00, 0x18, 0x01, 0x0d, 0xf0, 0x05, 0xb1 };
-
-#define TYPE_PL061 "pl061"
-#define PL061(obj) OBJECT_CHECK(PL061State, (obj), TYPE_PL061)
-
-typedef struct PL061State {
-    SysBusDevice parent_obj;
-
-    MemoryRegion iomem;
-    uint32_t locked;
-    uint32_t data;
-    uint32_t old_out_data;
-    uint32_t old_in_data;
-    uint32_t dir;
-    uint32_t isense;
-    uint32_t ibe;
-    uint32_t iev;
-    uint32_t im;
-    uint32_t istate;
-    uint32_t afsel;
-    uint32_t dr2r;
-    uint32_t dr4r;
-    uint32_t dr8r;
-    uint32_t odr;
-    uint32_t pur;
-    uint32_t pdr;
-    uint32_t slr;
-    uint32_t den;
-    uint32_t cr;
-    uint32_t amsel;
-    qemu_irq irq;
-    qemu_irq out[8];
-    const unsigned char *id;
-    uint32_t rsvd_start; /* reserved area: [rsvd_start, 0xfcc] */
-} PL061State;
+#include "hw/gpio/pl061.h"
 
 static const VMStateDescription vmstate_pl061 = {
     .name = "pl061",
@@ -155,7 +101,12 @@ static uint64_t pl061_read(void *opaque, hwaddr offset,
     PL061State *s = (PL061State *)opaque;
 
     if (offset < 0x400) {
-        return s->data & (offset >> 2);
+        if (s->chr) {
+            qemu_chr_accept_input(s->chr);
+        }
+        qemu_set_irq(s->irq, 0);
+        return s->data; // & (offset >> 2);
+        //return 's';
     }
     if (offset >= s->rsvd_start && offset <= 0xfcc) {
         goto err_out;
@@ -216,11 +167,16 @@ static void pl061_write(void *opaque, hwaddr offset,
 {
     PL061State *s = (PL061State *)opaque;
     uint8_t mask;
+    unsigned char ch;
 
     if (offset < 0x400) {
         mask = (offset >> 2) & s->dir;
         s->data = (s->data & ~mask) | (value & mask);
         pl061_update(s);
+        ch = value;
+        if (s->chr) {
+            qemu_chr_fe_write_all(s->chr, &ch, 1);
+        }
         return;
     }
     if (offset >= s->rsvd_start) {
@@ -293,6 +249,11 @@ err_out:
                   "pl061_write: Bad offset %x\n", (int)offset);
 }
 
+static int pl061_can_receive(void *opaque)
+{
+  return 1;
+}
+
 static void pl061_reset(DeviceState *dev)
 {
     PL061State *s = PL061(dev);
@@ -321,6 +282,7 @@ static void pl061_reset(DeviceState *dev)
     s->amsel = 0;
 }
 
+/*
 static void pl061_set_irq(void * opaque, int irq, int level)
 {
     PL061State *s = (PL061State *)opaque;
@@ -333,7 +295,7 @@ static void pl061_set_irq(void * opaque, int irq, int level)
             s->data |= mask;
         pl061_update(s);
     }
-}
+} */
 
 static const MemoryRegionOps pl061_ops = {
     .read = pl061_read,
@@ -349,10 +311,34 @@ static void pl061_luminary_init(Object *obj)
     s->rsvd_start = 0x52c;
 }
 
+static void pl061_receive(void *opaque, const uint8_t *buf, int size)
+{
+  printf ("yololo, pl061 recv '%c'\n", *buf);
+    PL061State *s = opaque;
+    s->data = *buf;
+
+    s->iev = 0xff;
+    s->isense = 0xff;
+    pl061_update(s);
+//    s->istate |= ~(s->data ^ s->iev) & s->isense;
+//    qemu_set_irq(s->irq, (s->istate & s->im) != 0);
+    //qemu_set_irq(s->irq, 1);
+}
+
+static void pl061_realize(DeviceState *dev, Error **errp)
+{
+    PL061State *s = PL061(dev);
+
+    if (s->chr) {
+        qemu_chr_add_handlers(s->chr, pl061_can_receive,
+                              pl061_receive, NULL, s);
+    }
+}
+
 static void pl061_init(Object *obj)
 {
     PL061State *s = PL061(obj);
-    DeviceState *dev = DEVICE(obj);
+//    DeviceState *dev = DEVICE(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
     s->id = pl061_id;
@@ -361,16 +347,23 @@ static void pl061_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &pl061_ops, s, "pl061", 0x1000);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq);
-    qdev_init_gpio_in(dev, pl061_set_irq, 8);
-    qdev_init_gpio_out(dev, s->out, 8);
+//    qdev_init_gpio_in(dev, pl061_set_irq, 8);
+//    qdev_init_gpio_out(dev, s->out, 8);
 }
+
+static Property pl061_properties[] = {
+    DEFINE_PROP_CHR("chardev", PL061State, chr),
+    DEFINE_PROP_END_OF_LIST(),
+};
 
 static void pl061_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->vmsd = &vmstate_pl061;
-    dc->reset = &pl061_reset;
+//    dc->vmsd = &vmstate_pl061;
+    dc->reset = pl061_reset;
+    dc->props = pl061_properties;
+    dc->realize = pl061_realize;
 }
 
 static const TypeInfo pl061_info = {
