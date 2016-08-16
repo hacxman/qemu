@@ -198,7 +198,7 @@ void hmp_pcie_aer_inject_error(Monitor *mon, const QDict *qdict);
 
 /* serial ports */
 
-#define MAX_SERIAL_PORTS 4
+#define MAX_SERIAL_PORTS 8
 
 extern CharDriverState *serial_hds[MAX_SERIAL_PORTS];
 
